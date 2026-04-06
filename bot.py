@@ -1,8 +1,7 @@
 import os
 import json
-import asyncio
-from datetime import datetime, date
-from anthropic import Anthropic
+from datetime import date
+import google.generativeai as genai
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -11,10 +10,11 @@ from telegram.ext import (
 
 # ── 설정 ──────────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "여기에_텔레그램_토큰")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "여기에_API_키")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "여기에_Gemini_키")
 DATA_FILE = "tasks.json"
 
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 # ── 데이터 저장/불러오기 ──────────────────────────────
 def load_data():
@@ -37,15 +37,10 @@ def get_user_tasks(user_id: str):
         save_data(data)
     return data[user_id][today], data, today
 
-# ── Claude AI 호출 ────────────────────────────────────
-def ask_claude(system_prompt: str, user_message: str) -> str:
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_message}]
-    )
-    return response.content[0].text
+# ── Gemini AI 호출 ────────────────────────────────────
+def ask_gemini(system_prompt: str, user_message: str) -> str:
+    response = model.generate_content(f"{system_prompt}\n\n{user_message}")
+    return response.text
 
 # ── 키보드 메뉴 ───────────────────────────────────────
 def main_keyboard():
@@ -87,7 +82,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     tasks, data, today = get_user_tasks(user_id)
 
-    # 상태 관리 (할 일 추가 / 완료 체크 / 삭제 모드)
     state = context.user_data.get("state")
 
     # ── 할 일 추가 모드 ──
@@ -188,13 +182,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "우선순위(높음/중간/낮음)를 정해주고, 각각 짧게 이유를 설명해주세요. "
             "친근하고 간결하게 한국어로 답변하세요."
         )
-        result = ask_claude(system, f"오늘 할 일 목록:\n{task_list}\n\n우선순위를 정해주세요.")
+        result = ask_gemini(system, f"오늘 할 일 목록:\n{task_list}\n\n우선순위를 정해주세요.")
 
-        # 우선순위 자동 저장 (높음/중간/낮음 파싱)
         for i, task in enumerate(tasks):
-            name_lower = task['title']
             for line in result.split('\n'):
-                if name_lower in line or str(i+1) + '.' in line:
+                if task['title'] in line or str(i+1) + '.' in line:
                     if '높음' in line:
                         tasks[i]['priority'] = '높음'
                     elif '중간' in line:
@@ -219,20 +211,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "잘한 점을 칭찬하고, 내일을 위한 짧은 조언을 해주세요. "
             "친근하고 따뜻하게 한국어로 200자 이내로 답변하세요."
         )
-        result = ask_claude(system, f"오늘의 결과:\n{summary}")
+        result = ask_gemini(system, f"오늘의 결과:\n{summary}")
         await update.message.reply_text(
             f"🌙 오늘 하루 회고\n{'─'*20}\n{result}",
             reply_markup=main_keyboard()
         )
 
     else:
-        # 일반 대화 → Claude가 답변
         system = (
             "당신은 친근한 하루 일정 도우미입니다. "
             "할 일 관리, 생산성, 동기부여에 대해 도움을 드립니다. "
             "간결하고 친근하게 한국어로 답변하세요."
         )
-        result = ask_claude(system, text)
+        result = ask_gemini(system, text)
         await update.message.reply_text(result, reply_markup=main_keyboard())
 
 # ── 실행 ──────────────────────────────────────────────
